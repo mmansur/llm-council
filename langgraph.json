@@ -1,0 +1,7 @@
+{
+  "dependencies": ["./llm_council"],
+  "graphs": {
+    "council": "./llm_council/agent.py:graph"
+  },
+  "env": ".env"
+}
