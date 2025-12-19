@@ -1,7 +1,8 @@
 """State definitions for the LLM Council workflow."""
 
-from typing import TypedDict, List, Annotated
+from typing import List, Annotated
 from operator import add
+from langgraph.graph import MessagesState
 
 
 def merge_dicts(left: dict, right: dict) -> dict:
@@ -13,24 +14,23 @@ def merge_dicts(left: dict, right: dict) -> dict:
     return {**left, **right}
 
 
-class CouncilResponse(TypedDict):
+class CouncilResponse(dict):
     """Individual response from a council member."""
-    model: str
-    response: str
+    pass
 
 
-class CouncilRanking(TypedDict):
+class CouncilRanking(dict):
     """Ranking from a council member."""
-    model: str
-    ranking_text: str
-    parsed_ranking: List[str]
+    pass
 
 
-class CouncilState(TypedDict):
-    """State for the LLM Council workflow."""
-    # Input
-    user_query: str
+class CouncilState(MessagesState):
+    """
+    State for the LLM Council workflow.
     
+    Extends MessagesState to enable the LangSmith Chat interface.
+    The 'messages' field is inherited from MessagesState.
+    """
     # Stage 1: Individual responses (uses add reducer for parallel updates)
     stage1_responses: Annotated[List[CouncilResponse], add]
     
