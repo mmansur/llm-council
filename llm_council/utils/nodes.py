@@ -51,6 +51,23 @@ def initialize_llms():
         chairman_llm = get_llm(CHAIRMAN_MODEL)
 
 
+def get_user_query(state: CouncilState) -> str:
+    """Extract the user query from state - checks both _user_query and messages."""
+    # First check if we have the extracted query
+    if state.get("_user_query"):
+        return state["_user_query"]
+    
+    # Fallback: extract from messages
+    messages = state.get("messages", [])
+    for msg in reversed(messages):
+        if isinstance(msg, HumanMessage):
+            return msg.content
+        elif isinstance(msg, dict) and msg.get("role") == "user":
+            return msg.get("content", "")
+    
+    return ""
+
+
 def parse_ranking_from_text(ranking_text: str) -> List[str]:
     """Parse the FINAL RANKING section from the model's response."""
     if "FINAL RANKING:" in ranking_text:
@@ -69,17 +86,17 @@ def parse_ranking_from_text(ranking_text: str) -> List[str]:
 
 def prepare_ranking_context(state: CouncilState) -> tuple:
     """Prepare anonymized responses and label mapping for ranking."""
-    responses = state["stage1_responses"]
+    responses = state.get("stage1_responses", [])
     
     labels = [chr(65 + i) for i in range(len(responses))]
     
     label_to_model = {
-        f"Response {label}": resp["model"]
+        f"Response {label}": resp.get("model", "unknown")
         for label, resp in zip(labels, responses)
     }
     
     responses_text = "\n\n".join([
-        f"Response {label}:\n{resp['response']}"
+        f"Response {label}:\n{resp.get('response', '')}"
         for label, resp in zip(labels, responses)
     ])
     
@@ -133,8 +150,10 @@ def create_stage1_node(model_name: str):
                 }]
             }
         
+        user_query = get_user_query(state)
+        
         try:
-            response = llm.invoke([HumanMessage(content=state["user_query"])])
+            response = llm.invoke([HumanMessage(content=user_query)])
             return {
                 "stage1_responses": [{
                     "model": model_name,
@@ -173,10 +192,11 @@ def create_stage2_node(model_name: str):
             }
         
         responses_text, label_to_model = prepare_ranking_context(state)
+        user_query = get_user_query(state)
         
         ranking_prompt = f"""You are evaluating different responses to the following question:
 
-Question: {state['user_query']}
+Question: {user_query}
 
 Here are the responses from different models (anonymized):
 
@@ -250,20 +270,22 @@ def stage3_chairman_synthesis(state: CouncilState) -> dict:
             "aggregate_rankings": []
         }
     
+    user_query = get_user_query(state)
+    
     # Build comprehensive context for chairman
     stage1_text = "\n\n".join([
-        f"Model: {resp['model']}\nResponse: {resp['response']}"
-        for resp in state["stage1_responses"]
+        f"Model: {resp.get('model', 'unknown')}\nResponse: {resp.get('response', '')}"
+        for resp in state.get("stage1_responses", [])
     ])
     
     stage2_text = "\n\n".join([
-        f"Model: {ranking['model']}\nRanking: {ranking['ranking_text']}"
-        for ranking in state["stage2_rankings"]
+        f"Model: {ranking.get('model', 'unknown')}\nRanking: {ranking.get('ranking_text', '')}"
+        for ranking in state.get("stage2_rankings", [])
     ])
     
     chairman_prompt = f"""You are the Chairman of an LLM Council. Multiple AI models have provided responses to a user's question, and then ranked each other's responses.
 
-Original Question: {state['user_query']}
+Original Question: {user_query}
 
 STAGE 1 - Individual Responses:
 {stage1_text}
