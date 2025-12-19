@@ -21,6 +21,9 @@ CHAIRMAN_MODEL = os.environ.get("CHAIRMAN_MODEL", "openai/gpt-4o")
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
+# Maximum characters per response to avoid token limits
+MAX_RESPONSE_LENGTH = 3000
+
 
 def get_llm(model_name: str) -> ChatOpenAI:
     """Create a LangChain ChatOpenAI instance configured for OpenRouter."""
@@ -49,6 +52,13 @@ def initialize_llms():
     if os.environ.get("OPENROUTER_API_KEY"):
         council_llms = {model: get_llm(model) for model in COUNCIL_MODELS}
         chairman_llm = get_llm(CHAIRMAN_MODEL)
+
+
+def truncate_text(text: str, max_length: int = MAX_RESPONSE_LENGTH) -> str:
+    """Truncate text to a maximum length, adding ellipsis if truncated."""
+    if len(text) <= max_length:
+        return text
+    return text[:max_length] + "... [truncated]"
 
 
 def get_user_query(state: CouncilState) -> str:
@@ -272,37 +282,70 @@ def stage3_chairman_synthesis(state: CouncilState) -> dict:
     
     user_query = get_user_query(state)
     
-    # Build comprehensive context for chairman
+    # Build CONCISE context for chairman to avoid token limits
+    # Only include truncated responses and parsed rankings (not full evaluation text)
+    
+    stage1_responses = state.get("stage1_responses", [])
+    stage2_rankings = state.get("stage2_rankings", [])
+    label_to_model = state.get("label_to_model", {})
+    
+    # Create reverse mapping: model -> label
+    model_to_label = {v: k for k, v in label_to_model.items()}
+    
+    # Stage 1: Truncated responses
     stage1_text = "\n\n".join([
-        f"Model: {resp.get('model', 'unknown')}\nResponse: {resp.get('response', '')}"
-        for resp in state.get("stage1_responses", [])
+        f"**{resp.get('model', 'unknown')}** ({model_to_label.get(resp.get('model', ''), 'Unknown')}):\n{truncate_text(resp.get('response', ''))}"
+        for resp in stage1_responses
     ])
     
-    stage2_text = "\n\n".join([
-        f"Model: {ranking.get('model', 'unknown')}\nRanking: {ranking.get('ranking_text', '')}"
-        for ranking in state.get("stage2_rankings", [])
-    ])
+    # Stage 2: Only include the PARSED rankings, not the full evaluation text
+    stage2_summary_parts = []
+    for ranking in stage2_rankings:
+        model = ranking.get('model', 'unknown')
+        parsed = ranking.get('parsed_ranking', [])
+        if parsed:
+            # Convert labels to model names for clarity
+            ranking_with_names = []
+            for i, label in enumerate(parsed, 1):
+                model_name = label_to_model.get(label, label)
+                ranking_with_names.append(f"{i}. {model_name}")
+            stage2_summary_parts.append(f"**{model}** ranked:\n" + "\n".join(ranking_with_names))
+        else:
+            stage2_summary_parts.append(f"**{model}**: No valid ranking parsed")
+    
+    stage2_text = "\n\n".join(stage2_summary_parts)
+    
+    # Calculate aggregate rankings
+    aggregate_rankings = calculate_aggregate_rankings(state)
+    
+    # Format aggregate rankings for the prompt
+    aggregate_text = ""
+    if aggregate_rankings:
+        aggregate_parts = [f"{i}. {agg['model']} (avg rank: {agg['average_rank']})" 
+                          for i, agg in enumerate(aggregate_rankings, 1)]
+        aggregate_text = "\n\nAGGREGATE RANKINGS (lower is better):\n" + "\n".join(aggregate_parts)
     
     chairman_prompt = f"""You are the Chairman of an LLM Council. Multiple AI models have provided responses to a user's question, and then ranked each other's responses.
 
-Original Question: {user_query}
+ORIGINAL QUESTION: {user_query}
 
-STAGE 1 - Individual Responses:
+STAGE 1 - Individual Responses (may be truncated):
 {stage1_text}
 
-STAGE 2 - Peer Rankings:
+STAGE 2 - Peer Rankings Summary:
 {stage2_text}
+{aggregate_text}
 
-Your task as Chairman is to synthesize all of this information into a single, comprehensive, accurate answer to the user's original question. Consider:
-- The individual responses and their insights
+YOUR TASK as Chairman:
+Synthesize all responses into a single, comprehensive, accurate answer to the user's original question. Consider:
+- The key insights from each response
 - The peer rankings and what they reveal about response quality
-- Any patterns of agreement or disagreement
+- Areas of agreement and disagreement
 
 Provide a clear, well-reasoned final answer that represents the council's collective wisdom:"""
     
     try:
         response = chairman_llm.invoke([HumanMessage(content=chairman_prompt)])
-        aggregate_rankings = calculate_aggregate_rankings(state)
         
         return {
             "final_response": response.content,
